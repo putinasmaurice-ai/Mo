@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#3B6D11">
+<title>Pflanzen-Doktor</title>
+
+<!-- ════════════════════════════════════════════════════
+     ARCHITEKTUR-ÜBERSICHT (Single-File-Deployment)
+     ─────────────────────────────────────────────────
+     In einer echten Produktions-App würde jeder Block
+     in eine eigene Datei ausgelagert (SRP):
+
+     /services/HistoryService.js   ← localStorage-Logik
+     /services/AnalysisService.js  ← Anthropic API
+     /components/CameraView.js     ← Kamera-UI
+     /components/ResultView.js     ← Ergebnis-Rendering
+     /components/HistoryView.js    ← Verlauf-Rendering
+     /utils/ImageUtils.js          ← Base64-Konvertierung
+     /utils/DateUtils.js           ← Datumsformatierung
+     ════════════════════════════════════════════════ -->
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+  :root {
+    --green-50: #EAF3DE; --green-100: #C0DD97; --green-400: #639922;
+    --green-600: #3B6D11; --green-800: #27500A;
+    --amber-50: #FAEEDA; --amber-400: #BA7517; --amber-800: #633806;
+    --red-50: #FCEBEB; --red-400: #E24B4A; --red-800: #791F1F;
+    --teal-50: #E1F5EE; --teal-400: #1D9E75; --teal-800: #085041;
+    --gray-50: #F1EFE8; --gray-100: #D3D1C7; --gray-200: #B4B2A9;
+    --gray-600: #5F5E5A; --gray-800: #444441;
+    --bg-primary: #ffffff; --bg-secondary: #f5f5f0; --bg-tertiary: #eeede8;
+    --text-primary: #1a1a18; --text-secondary: #6b6a66;
+    --border: rgba(0,0,0,0.12); --border-strong: rgba(0,0,0,0.22);
+    --radius-md: 8px; --radius-lg: 12px; --radius-xl: 16px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-primary: #1c1c1a; --bg-secondary: #252523; --bg-tertiary: #111110;
+      --text-primary: #f0efe8; --text-secondary: #9a9993;
+      --border: rgba(255,255,255,0.10); --border-strong: rgba(255,255,255,0.18);
+      --gray-50: #252523; --gray-100: #333330;
+    }
+  }
+
+  body {
+    font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg-tertiary);
+    min-height: 100vh;
+    color: var(--text-primary);
+  }
+
+  /* ── Header ─────────────────────────────────────── */
+  .app-header {
+    background: var(--bg-primary);
+    border-bottom: 0.5px solid var(--border);
+    padding: 14px 16px 0;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .header-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .app-logo {
+    width: 34px; height: 34px; background: var(--green-600);
+    border-radius: 9px; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .app-title { font-size: 17px; font-weight: 600; color: var(--text-primary); }
+  .app-sub { font-size: 11px; color: var(--text-secondary); margin-top: 1px; }
+  .tab-bar { display: flex; }
+  .tab-btn {
+    flex: 1; padding: 10px 4px; font-size: 13px; font-weight: 500;
+    border: none; background: none; cursor: pointer;
+    color: var(--text-secondary); border-bottom: 2px solid transparent;
+    transition: all 0.15s; -webkit-tap-highlight-color: transparent;
+  }
+  .tab-btn.active { color: var(--green-600); border-bottom-color: var(--green-600); }
+
+  /* ── Layout ─────────────────────────────────────── */
+  .app-main { padding: 16px; max-width: 480px; margin: 0 auto; padding-bottom: 32px; }
+
+  /* ── Camera Area ─────────────────────────────────── */
+  .camera-area {
+    background: var(--bg-primary); border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 12px;
+  }
+  .preview-box {
+    width: 100%; aspect-ratio: 4/3;
+    background: var(--gray-50); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px;
+    position: relative; overflow: hidden;
+  }
+  .preview-box img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
+  .preview-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .scan-icon-wrap {
+    width: 68px; height: 68px; border-radius: 50%;
+    background: var(--green-50); display: flex; align-items: center; justify-content: center;
+  }
+  .preview-hint { font-size: 13px; color: var(--text-secondary); }
+  .corner-br { position: absolute; pointer-events: none; }
+  .corner-br.tl { top: 12px; left: 12px; }
+  .corner-br.tr { top: 12px; right: 12px; transform: scaleX(-1); }
+  .corner-br.bl { bottom: 12px; left: 12px; transform: scaleY(-1); }
+  .corner-br.br { bottom: 12px; right: 12px; transform: scale(-1); }
+
+  /* ── Buttons ─────────────────────────────────────── */
+  .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; }
+  .btn {
+    padding: 12px 8px; border-radius: var(--radius-md);
+    border: 0.5px solid var(--border-strong);
+    background: var(--bg-primary); color: var(--text-primary);
+    font-size: 14px; font-weight: 500; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { background: var(--bg-secondary); }
+  .analyze-btn-wrap { padding: 0 12px 14px; }
+  .analyze-btn {
+    width: 100%; padding: 14px; border-radius: var(--radius-md);
+    border: none; background: var(--green-600); color: #fff;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .analyze-btn:active:not(:disabled) { background: var(--green-800); }
+  .analyze-btn:disabled { background: var(--gray-200); cursor: not-allowed; }
+
+  /* ── API Key Input ─────────────────────────────────── */
+  .apikey-section {
+    padding: 12px; border-top: 0.5px solid var(--border);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .apikey-label { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
+  .apikey-row { display: flex; gap: 8px; }
+  .apikey-input {
+    flex: 1; padding: 9px 12px; border-radius: var(--radius-md);
+    border: 0.5px solid var(--border-strong);
+    background: var(--bg-secondary); color: var(--text-primary);
+    font-size: 13px; font-family: monospace; letter-spacing: 0.02em;
+  }
+  .apikey-input:focus { outline: none; border-color: var(--green-400); }
+  .apikey-save {
+    padding: 9px 14px; border-radius: var(--radius-md);
+    border: none; background: var(--green-50); color: var(--green-800);
+    font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  }
+  .apikey-hint { font-size: 11px; color: var(--text-secondary); }
+
+  /* ── Loading ─────────────────────────────────────── */
+  .loading-card {
+    background: var(--bg-primary); border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg); padding: 32px 20px; text-align: center; margin-bottom: 12px;
+  }
+  .spinner {
+    width: 44px; height: 44px; border: 2px solid var(--green-100);
+    border-top-color: var(--green-600); border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 0 auto 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-title { font-size: 15px; font-weight: 500; margin-bottom: 4px; }
+  .loading-sub { font-size: 13px; color: var(--text-secondary); }
+  .loading-steps { margin-top: 16px; display: flex; flex-direction: column; gap: 6px; }
+  .step-item {
+    display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary);
+    padding: 7px 10px; background: var(--bg-secondary); border-radius: 6px;
+  }
+  .step-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--green-400); flex-shrink: 0;
+    animation: pulse 1s ease-in-out infinite alternate;
+  }
+  @keyframes pulse { from { opacity: 0.3; } to { opacity: 1; } }
+
+  /* ── Results ─────────────────────────────────────── */
+  .result-card {
+    background: var(--bg-primary); border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 12px;
+  }
+  .result-header {
+    padding: 14px 16px 12px; border-bottom: 0.5px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .severity-badge { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; flex-shrink: 0; }
+  .sev-low  { background: var(--green-50); color: var(--green-800); }
+  .sev-medium { background: var(--amber-50); color: var(--amber-800); }
+  .sev-high { background: var(--red-50); color: var(--red-800); }
+  .result-title { font-size: 16px; font-weight: 500; flex: 1; }
+  .result-body { padding: 14px 16px; }
+  .section-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+    color: var(--text-secondary); text-transform: uppercase; margin-bottom: 8px;
+  }
+  .cause-item {
+    display: flex; gap: 8px; padding: 8px 10px; background: var(--bg-secondary);
+    border-radius: 6px; margin-bottom: 6px; font-size: 13px; line-height: 1.5;
+  }
+  .cause-num { font-weight: 600; color: var(--amber-400); flex-shrink: 0; font-size: 12px; padding-top: 1px; }
+  .solutions-section {
+    background: var(--teal-50); border: 0.5px solid var(--teal-400);
+    border-radius: var(--radius-md); padding: 12px; margin-bottom: 12px;
+  }
+  .solutions-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--teal-800); text-transform: uppercase; margin-bottom: 8px; }
+  .solution-item { display: flex; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--teal-800); margin-bottom: 6px; }
+  .prevention-section { background: var(--green-50); border-radius: var(--radius-md); padding: 12px; }
+  .prevention-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--green-800); text-transform: uppercase; margin-bottom: 8px; }
+  .prevention-text { font-size: 13px; line-height: 1.6; color: var(--green-800); }
+  .confidence-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .conf-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+  .conf-bar { flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .conf-fill { height: 100%; background: var(--green-400); border-radius: 2px; transition: width 0.6s ease; }
+  .conf-pct { font-size: 12px; font-weight: 500; color: var(--green-600); white-space: nowrap; }
+
+  /* ── History ─────────────────────────────────────── */
+  .history-empty {
+    text-align: center; padding: 52px 20px; color: var(--text-secondary);
+  }
+  .history-empty-title { font-size: 15px; font-weight: 500; margin-bottom: 4px; color: var(--text-primary); }
+  .history-empty-sub { font-size: 13px; }
+  .history-item {
+    background: var(--bg-primary); border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 10px; cursor: pointer;
+  }
+  .history-item:active { background: var(--bg-secondary); }
+  .hi-inner { display: flex; gap: 12px; padding: 12px; align-items: flex-start; }
+  .hi-thumb { width: 60px; height: 60px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--gray-50); }
+  .hi-thumb-placeholder {
+    width: 60px; height: 60px; border-radius: 8px; background: var(--green-50);
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .hi-body { flex: 1; min-width: 0; }
+  .hi-title { font-size: 14px; font-weight: 500; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hi-date { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
+  .hi-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .hi-badge { padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 500; }
+  .history-clear-btn {
+    width: 100%; padding: 11px; border: 0.5px solid var(--red-400);
+    border-radius: var(--radius-md); background: transparent;
+    font-size: 13px; color: var(--red-400); cursor: pointer; margin-top: 4px;
+  }
+  .history-clear-btn:active { background: var(--red-50); }
+  .detail-back { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text-secondary); cursor: pointer; margin-bottom: 12px; padding: 4px 0; }
+  .detail-img { width: 100%; border-radius: var(--radius-lg); margin-bottom: 12px; object-fit: cover; max-height: 240px; }
+  .reset-btn {
+    width: 100%; padding: 11px; border: 0.5px solid var(--border-strong);
+    border-radius: var(--radius-md); background: var(--bg-primary);
+    font-size: 14px; color: var(--text-secondary); cursor: pointer; margin-top: 4px;
+  }
+  .reset-btn:active { background: var(--bg-secondary); }
+  .error-card { background: var(--red-50); border: 0.5px solid var(--red-400); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 12px; font-size: 14px; color: var(--red-800); }
+  .tips-card { background: var(--bg-primary); border: 0.5px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; }
+  .tips-title { font-size: 13px; font-weight: 500; margin-bottom: 10px; color: var(--text-secondary); }
+  .tip-row { display: flex; gap: 8px; margin-bottom: 8px; font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
+  .tip-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--gray-200); flex-shrink: 0; margin-top: 6px; }
+  #fileInput, #cameraInput { display: none; }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-top">
+    <div class="app-logo">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round">
+        <path d="M12 22V12M12 12C12 7 7 3 2 4c1 4 4 7 7 8M12 12c0-5 5-9 10-8-1 4-4 7-7 8"/>
+      </svg>
+    </div>
+    <div>
+      <div class="app-title">Pflanzen-Doktor</div>
+      <div class="app-sub">KI-Diagnose für Cannabis-Pflanzen</div>
+    </div>
+  </div>
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tabBtnScan" onclick="switchTab('scan')">Scan</button>
+    <button class="tab-btn" id="tabBtnHistory" onclick="switchTab('history')">Verlauf <span id="historyCount"></span></button>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <!-- ══ TAB: SCAN ══════════════════════════════════ -->
+  <div id="tabScan">
+    <div id="viewCapture">
+      <div class="camera-area">
+        <div class="preview-box" id="previewBox">
+          <div class="preview-placeholder" id="placeholder">
+            <div class="scan-icon-wrap">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3B6D11" stroke-width="1.5">
+                <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+                <rect x="3" y="14" width="7" height="7" rx="1"/>
+                <path d="M14 14h2v2h-2zM18 14h3M14 18v3M18 18h3v3h-3z" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <span class="preview-hint">Bild aufnehmen oder hochladen</span>
+          </div>
+          <img id="previewImg" style="display:none" />
+          <svg class="corner-br tl" width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M2 10V2h8" stroke="#639922" stroke-width="2" stroke-linecap="round"/></svg>
+          <svg class="corner-br tr" width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M2 10V2h8" stroke="#639922" stroke-width="2" stroke-linecap="round"/></svg>
+          <svg class="corner-br bl" width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M2 10V2h8" stroke="#639922" stroke-width="2" stroke-linecap="round"/></svg>
+          <svg class="corner-br br" width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M2 10V2h8" stroke="#639922" stroke-width="2" stroke-linecap="round"/></svg>
+        </div>
+        <div class="btn-row">
+          <button class="btn" onclick="triggerCamera()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Kamera
+          </button>
+          <button class="btn" onclick="triggerUpload()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            Galerie
+          </button>
+        </div>
+
+        <!-- API-Key Eingabe — wird in localStorage gespeichert -->
+        <div class="apikey-section">
+          <div class="apikey-label">ANTHROPIC API KEY</div>
+          <div class="apikey-row">
+            <input class="apikey-input" type="password" id="apiKeyInput" placeholder="sk-ant-..." />
+            <button class="apikey-save" onclick="saveApiKey()">Speichern</button>
+          </div>
+          <div class="apikey-hint">Wird lokal gespeichert · <a href="https://console.anthropic.com/" target="_blank" style="color: var(--green-600)">API Key holen</a></div>
+        </div>
+
+        <div class="analyze-btn-wrap" style="margin-top: 8px;">
+          <button class="analyze-btn" id="analyzeBtn" disabled onclick="startAnalysis()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M11 8v6M8 11h6"/></svg>
+            Jetzt analysieren
+          </button>
+        </div>
+      </div>
+
+      <div class="tips-card">
+        <div class="tips-title">Tipps für bessere Ergebnisse</div>
+        <div class="tip-row"><span class="tip-dot"></span><span>Befallene Blätter nah und scharf fotografieren</span></div>
+        <div class="tip-row"><span class="tip-dot"></span><span>Gutes natürliches Licht verwenden, kein Blitz</span></div>
+        <div class="tip-row"><span class="tip-dot"></span><span>Schädlinge wenn möglich von beiden Seiten zeigen</span></div>
+        <div class="tip-row"><span class="tip-dot"></span><span>Mehrere betroffene Stellen in einem Bild zeigen</span></div>
+      </div>
+    </div>
+
+    <div id="viewLoading" style="display:none">
+      <div class="loading-card">
+        <div class="spinner"></div>
+        <div class="loading-title">Diagnose läuft...</div>
+        <div class="loading-sub">KI analysiert dein Pflanzenbild</div>
+        <div class="loading-steps">
+          <div class="step-item"><span class="step-dot"></span>Bild wird verarbeitet</div>
+          <div class="step-item"><span class="step-dot" style="animation-delay:.3s"></span>Symptome werden erkannt</div>
+          <div class="step-item"><span class="step-dot" style="animation-delay:.6s"></span>Ursachen & Lösungen werden ermittelt</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="viewResult" style="display:none">
+      <div class="result-card" id="resultCard"></div>
+      <button class="reset-btn" onclick="resetScan()">↩ Neue Analyse starten</button>
+    </div>
+
+    <div id="viewError" style="display:none">
+      <div class="error-card" id="errorMsg"></div>
+      <button class="reset-btn" onclick="resetScan()">↩ Erneut versuchen</button>
+    </div>
+  </div>
+
+  <!-- ══ TAB: HISTORY ═══════════════════════════════ -->
+  <div id="tabHistory" style="display:none">
+    <div id="historyListView">
+      <div id="historyList"></div>
+    </div>
+    <div id="historyDetailView" style="display:none">
+      <div class="detail-back" onclick="closeDetail()">← Zurück zum Verlauf</div>
+      <img id="detailImg" class="detail-img" style="display:none" />
+      <div class="result-card" id="detailCard"></div>
+      <button class="reset-btn" onclick="closeDetail()">← Zurück</button>
+    </div>
+  </div>
+
+</main>
+
+<input type="file" id="fileInput" accept="image/*" onchange="onFileSelected(event)">
+<input type="file" id="cameraInput" accept="image/*" capture="environment" onchange="onFileSelected(event)">
+
+<script>
+// ════════════════════════════════════════════════════════
+// MODULE: AppState — Globaler In-Memory-State
+// ════════════════════════════════════════════════════════
+const AppState = {
+  imageBase64: null,
+  imageMime: null,
+  currentDataUrl: null,
+  activeTab: 'scan',
+};
+
+// ════════════════════════════════════════════════════════
+// MODULE: HistoryService
+// SRP: Nur localStorage-Logik für den Scan-Verlauf.
+// Kapselt get/set/clear, damit andere Module nicht direkt
+// auf localStorage zugreifen (leichter austauschbar → z.B. IndexedDB).
+// ════════════════════════════════════════════════════════
+const HistoryService = (() => {
+  const KEY = 'plantdoctor_history_v1';
+  const MAX = 50;
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY) || '[]'); }
+    catch { return []; }
+  }
+  function persist(data) {
+    try { localStorage.setItem(KEY, JSON.stringify(data)); }
+    catch (e) { console.warn('HistoryService: localStorage nicht verfügbar', e); }
+  }
+
+  return {
+    save(entry) {
+      const list = load();
+      list.unshift(entry);
+      if (list.length > MAX) list.pop();
+      persist(list);
+    },
+    getAll() { return load(); },
+    getById(id) { return load().find(e => e.id === id) || null; },
+    clear() { persist([]); },
+  };
+})();
+
+// ════════════════════════════════════════════════════════
+// MODULE: ApiKeyService
+// SRP: Nur Speichern/Lesen des API-Keys in localStorage.
+// ════════════════════════════════════════════════════════
+const ApiKeyService = (() => {
+  const KEY = 'plantdoctor_apikey';
+  return {
+    get() { return localStorage.getItem(KEY) || ''; },
+    set(v) { localStorage.setItem(KEY, v.trim()); },
+  };
+})();
+
+// ════════════════════════════════════════════════════════
+// MODULE: CameraService
+// SRP: Nur das Öffnen von Kamera/Galerie-Dialogen.
+// ════════════════════════════════════════════════════════
+function triggerCamera() { document.getElementById('cameraInput').click(); }
+function triggerUpload()  { document.getElementById('fileInput').click(); }
+
+// ════════════════════════════════════════════════════════
+// MODULE: ImagePreviewService
+// SRP: Nur Base64-Konvertierung und Vorschau-Anzeige.
+// ════════════════════════════════════════════════════════
+function onFileSelected(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const dataUrl = ev.target.result;
+    const [meta, b64] = dataUrl.split(',');
+    AppState.imageBase64 = b64;
+    AppState.imageMime = meta.match(/:(.*?);/)[1];
+    AppState.currentDataUrl = dataUrl;
+    document.getElementById('previewImg').src = dataUrl;
+    document.getElementById('previewImg').style.display = 'block';
+    document.getElementById('placeholder').style.display = 'none';
+    document.getElementById('analyzeBtn').disabled = false;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+}
+
+// ════════════════════════════════════════════════════════
+// MODULE: AnalysisService
+// SRP: Nur der Anthropic-API-Call mit Vision.
+// Wirft Fehler bei API-Problemen (Fehlerhandling im Orchestrator).
+// ════════════════════════════════════════════════════════
+async function callAnalysisAPI(base64, mime, apiKey) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 1000,
+      system: `Du bist ein Experte für Cannabis-Anbau, Pflanzenkrankheiten und Schädlingsbekämpfung.
+Analysiere das Bild und antworte AUSSCHLIESSLICH als reines JSON ohne Markdown:
+{"diagnosis":"Kurze Hauptdiagnose (1 Satz)","severity":"low|medium|high","confidence":0-100,"causes":["Ursache 1","Ursache 2","Ursache 3"],"solutions":["Maßnahme 1","Maßnahme 2","Maßnahme 3","Maßnahme 4"],"prevention":"2 Sätze Prävention"}
+Antworte immer auf Deutsch.`,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: mime, data: base64 } },
+        { type: 'text', text: 'Analysiere diese Pflanze. Was für Mängel, Krankheiten oder Schädlinge erkennst du?' }
+      ]}]
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || 'API-Fehler ' + res.status);
+  }
+  const data = await res.json();
+  const raw = data.content.find(b => b.type === 'text')?.text || '{}';
+  return JSON.parse(raw.replace(/```json|```/g, '').trim());
+}
+
+// ════════════════════════════════════════════════════════
+// MODULE: UIOrchestrator
+// SRP: Nur View- und Tab-Switching.
+// ════════════════════════════════════════════════════════
+function showScanView(id) {
+  ['viewCapture','viewLoading','viewResult','viewError'].forEach(v =>
+    document.getElementById(v).style.display = v === id ? 'block' : 'none'
+  );
+}
+
+function switchTab(tab) {
+  AppState.activeTab = tab;
+  document.getElementById('tabScan').style.display = tab === 'scan' ? 'block' : 'none';
+  document.getElementById('tabHistory').style.display = tab === 'history' ? 'block' : 'none';
+  document.getElementById('tabBtnScan').classList.toggle('active', tab === 'scan');
+  document.getElementById('tabBtnHistory').classList.toggle('active', tab === 'history');
+  if (tab === 'history') renderHistoryList();
+}
+
+// ════════════════════════════════════════════════════════
+// MODULE: AnalysisOrchestrator
+// SRP: Nur der Analyse-Flow (Bild → API → Speichern → Anzeigen).
+// Delegiert jeden Schritt an den zuständigen Service.
+// ════════════════════════════════════════════════════════
+async function startAnalysis() {
+  if (!AppState.imageBase64) return;
+  const apiKey = ApiKeyService.get();
+  if (!apiKey) {
+    alert('Bitte zuerst deinen Anthropic API Key eingeben und speichern.');
+    return;
+  }
+  showScanView('viewLoading');
+  try {
+    const result = await callAnalysisAPI(AppState.imageBase64, AppState.imageMime, apiKey);
+    HistoryService.save({
+      id: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      thumbDataUrl: AppState.currentDataUrl,
+      diagnosis: result.diagnosis || 'Unbekannt',
+      severity: result.severity || 'low',
+      confidence: Math.min(100, Math.max(0, result.confidence || 75)),
+      causes: result.causes || [],
+      solutions: result.solutions || [],
+      prevention: result.prevention || '',
+    });
+    updateHistoryBadge();
+    ResultRenderer.render('resultCard', result);
+    showScanView('viewResult');
+  } catch (err) {
+    document.getElementById('errorMsg').textContent = 'Fehler: ' + err.message;
+    showScanView('viewError');
+  }
+}
+
+function resetScan() {
+  AppState.imageBase64 = null; AppState.imageMime = null; AppState.currentDataUrl = null;
+  document.getElementById('previewImg').style.display = 'none';
+  document.getElementById('placeholder').style.display = 'flex';
+  document.getElementById('analyzeBtn').disabled = false;
+  showScanView('viewCapture');
+}
+
+function saveApiKey() {
+  const val = document.getElementById('apiKeyInput').value.trim();
+  if (!val) return;
+  ApiKeyService.set(val);
+  document.getElementById('apiKeyInput').value = '••••••••' + val.slice(-4);
+  document.getElementById('analyzeBtn').disabled = !AppState.imageBase64;
+  alert('API Key gespeichert!');
+}
+
+// ════════════════════════════════════════════════════════
+// MODULE: ResultRenderer
+// SRP: Nur HTML-Rendering der Diagnose-Daten.
+// ════════════════════════════════════════════════════════
+const ResultRenderer = {
+  sevLabel: s => ({low:'Gering',medium:'Mittel',high:'Hoch'}[s]||s),
+  sevClass: s => ({low:'sev-low',medium:'sev-medium',high:'sev-high'}[s]||'sev-low'),
+  render(id, r) {
+    const conf = Math.min(100, Math.max(0, r.confidence||75));
+    const causes = (r.causes||[]).map((c,i)=>
+      `<div class="cause-item"><span class="cause-num">${i+1}.</span><span>${c}</span></div>`).join('');
+    const solutions = (r.solutions||[]).map(s=>
+      `<div class="solution-item"><span style="flex-shrink:0;color:#1D9E75">✓</span><span>${s}</span></div>`).join('');
+    document.getElementById(id).innerHTML = `
+      <div class="result-header">
+        <span class="result-title">${r.diagnosis||'Diagnose'}</span>
+        <span class="severity-badge ${this.sevClass(r.severity)}">${this.sevLabel(r.severity)}</span>
+      </div>
+      <div class="result-body">
+        <div class="confidence-row">
+          <span class="conf-label">Sicherheit</span>
+          <div class="conf-bar"><div class="conf-fill" style="width:${conf}%"></div></div>
+          <span class="conf-pct">${conf}%</span>
+        </div>
+        <div class="section-label">Mögliche Ursachen</div>
+        <div class="causes-list">${causes}</div>
+        <div class="solutions-section">
+          <div class="solutions-label">Empfohlene Maßnahmen</div>${solutions}
+        </div>
+        <div class="prevention-section">
+          <div class="prevention-label">Prävention</div>
+          <div class="prevention-text">${r.prevention||''}</div>
+        </div>
+      </div>`;
+  }
+};
+
+// ════════════════════════════════════════════════════════
+// MODULE: HistoryRenderer
+// SRP: Nur Rendering von History-Liste und Detail-Ansicht.
+// ════════════════════════════════════════════════════════
+function formatDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('de-DE',{day:'2-digit',month:'short',year:'numeric'})
+    + ' · ' + d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+}
+
+function renderHistoryList() {
+  const entries = HistoryService.getAll();
+  const el = document.getElementById('historyList');
+  if (!entries.length) {
+    el.innerHTML = `<div class="history-empty">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#B4B2A9" stroke-width="1.5" style="margin:0 auto 12px;display:block"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round"/></svg>
+      <div class="history-empty-title">Noch keine Scans</div>
+      <div class="history-empty-sub">Analysierte Pflanzen erscheinen hier</div>
+    </div>`; return;
+  }
+  const sc = s => ({low:'sev-low',medium:'sev-medium',high:'sev-high'}[s]||'sev-low');
+  const sl = s => ({low:'Gering',medium:'Mittel',high:'Hoch'}[s]||s);
+  el.innerHTML = entries.map(e => `
+    <div class="history-item" onclick="openDetail('${e.id}')">
+      <div class="hi-inner">
+        ${e.thumbDataUrl
+          ? `<img class="hi-thumb" src="${e.thumbDataUrl}">`
+          : `<div class="hi-thumb-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3B6D11" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></div>`}
+        <div class="hi-body">
+          <div class="hi-title">${e.diagnosis}</div>
+          <div class="hi-date">${formatDate(e.timestamp)}</div>
+          <div class="hi-badges">
+            <span class="hi-badge severity-badge ${sc(e.severity)}">${sl(e.severity)}</span>
+            <span class="hi-badge" style="background:var(--bg-secondary);color:var(--text-secondary)">${e.confidence}% sicher</span>
+          </div>
+        </div>
+      </div>
+    </div>`).join('') + `<button class="history-clear-btn" onclick="clearHistory()">Verlauf löschen</button>`;
+}
+
+function openDetail(id) {
+  const e = HistoryService.getById(id);
+  if (!e) return;
+  document.getElementById('historyListView').style.display = 'none';
+  document.getElementById('historyDetailView').style.display = 'block';
+  const img = document.getElementById('detailImg');
+  if (e.thumbDataUrl) { img.src = e.thumbDataUrl; img.style.display = 'block'; }
+  else { img.style.display = 'none'; }
+  ResultRenderer.render('detailCard', e);
+}
+
+function closeDetail() {
+  document.getElementById('historyDetailView').style.display = 'none';
+  document.getElementById('historyListView').style.display = 'block';
+}
+
+function clearHistory() {
+  if (confirm('Gesamten Verlauf löschen?')) { HistoryService.clear(); updateHistoryBadge(); renderHistoryList(); }
+}
+
+function updateHistoryBadge() {
+  const c = HistoryService.getAll().length;
+  document.getElementById('historyCount').textContent = c > 0 ? `(${c})` : '';
+}
+
+// ════════════════════════════════════════════════════════
+// INIT — App-Start: gespeicherte Werte laden
+// ════════════════════════════════════════════════════════
+(function init() {
+  const savedKey = ApiKeyService.get();
+  if (savedKey) {
+    document.getElementById('apiKeyInput').value = '••••••••' + savedKey.slice(-4);
+  }
+  updateHistoryBadge();
+})();
+</script>
+</body>
+</html>
